@@ -13,6 +13,15 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+extern crate p7_compiler;
+
+static sample_code: &str = r###"
+    global my_var;
+    main(arg1 arg2) {
+        print "hello world";
+    }
+"###;
+
 fn main() {
-    println!("Hello, world!");
+    println!("{:#?}", p7_compiler::parser::ProgramParser::new().parse(sample_code).unwrap());
 }

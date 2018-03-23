@@ -1,11 +1,14 @@
 // vim:ft=rust
 use std::str::FromStr;
 use ast::*;
+use ast::Global::*;
+use ast::Statement::*;
+use ast::Expr::*;
 
 grammar;
 
-Ident: String = <s:r"[a-zA-Z_][a-zA-Z0-9_]*"> => s;
-String: String = <s:r#""([^"\\]|\\.)*"#> => s; // TODO: process escapes
+Ident: String = <s:r"[a-zA-Z_][a-zA-Z0-9_]*"> => s.to_string();
+String: String = <s:r#""([^"\\]|\\.)*""#> => s.to_string(); // TODO: process escapes
 Number: i16 = <s:r"[0-9]+"> => i16::from_str(s).unwrap();
 
 pub Program: Vec<Global> = {
@@ -17,15 +20,15 @@ pub Global: Global = {
     <Ident> "(" <Ident*> ")" <Statement> => Function(<>),
 };
 
-pub Statement: Box<Statement> = {
+pub Statement: Statement = {
     <Expr> ";" => ExprStatement(<>),
     "{" <Statement*> "}" => BlockStatement(<>),
-    "if" "(" <Expr> ")" <Statement> => IfStatement(<>),
-    "while" "(" <Expr> ")" <Statement> => WhileStatement(<>),
+    "if" "(" <cond:Expr> ")" <body:Statement> => IfStatement { cond, body: Box::new(body) },
+    "while" "(" <cond:Expr> ")" <body:Statement> => WhileStatement { cond, body: Box::new(body) },
     "return" <Expr?> ";" => ReturnStatement(<>),
     "break" ";" => BreakStatement,
     "continue" ";" => ContinueStatement,
-    "print" <String> => PrintStatement,
+    "print" <String> ";" => PrintStatement(<>),
 };
 
 pub Expr: Box<Expr> = {
@@ -33,18 +36,18 @@ pub Expr: Box<Expr> = {
 };
 
 pub Assignment: Box<Expr> = {
-    <Ident> "=" <Assignment> => AssignExpr(<>),
+    <Ident> "=" <Assignment> => Box::new(AssignExpr(<>)),
     Sum,
 };
 
 pub Sum: Box<Expr> = {
-    <Sum> "+" <Term> => Plus(<>),
-    <Sum> "-" <Term> => Minus(<>),
+    <Sum> "+" <Term> => Box::new(Plus(<>)),
+    <Sum> "-" <Term> => Box::new(Minus(<>)),
     Term,
 };
 
 pub Term: Box<Expr> = {
     "(" <Assignment> ")",
-    Ident,
-    Number,
+    Ident  => Box::new(Variable(<>)),
+    Number => Box::new(Constant(<>)),
 };
