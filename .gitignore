@@ -1,4 +1,6 @@
 
 /target/
 **/*.rs.bk
+*~
+*.swp
 src/parser.rs

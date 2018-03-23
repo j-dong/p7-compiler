@@ -4,18 +4,7 @@ use std::fmt;
 use std::fmt::Formatter;
 use std::fmt::Display;
 
-pub trait Label: Display { }
-
-pub struct LabelReference<'a, L: Label + 'a>(&'a L);
-
-impl<'a, L: Label> Display for LabelReference<'a, L> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let LabelReference(r) = *self;
-        write!(f, "@{}", r)
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct NumberedLabel(pub u64);
 
 impl Display for NumberedLabel {
@@ -25,24 +14,48 @@ impl Display for NumberedLabel {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
+pub struct LabelFactory { next: u64 }
+
+impl LabelFactory {
+    pub fn new() -> LabelFactory { LabelFactory { next: 0 } }
+    pub fn create(&mut self) -> NumberedLabel {
+        let i = self.next;
+        self.next += 1;
+        NumberedLabel(i)
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LabelReference(u64);
+
+impl Display for LabelReference {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let LabelReference(n) = *self;
+        write!(f, "@label{}", n)
+    }
+}
+
+impl NumberedLabel {
+    pub fn get_ref(&self) -> LabelReference {
+        let NumberedLabel(n) = *self;
+        LabelReference(n)
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Register(u8);
 
 pub const ZERO_REGISTER: Register = Register(0);
 
+pub const REGISTERS: [Register; 16] = [
+    Register(0),  Register(1),  Register(2),  Register(3),
+    Register(4),  Register(5),  Register(6),  Register(7),
+    Register(8),  Register(9),  Register(10), Register(11),
+    Register(12), Register(13), Register(14), Register(15),
+];
+
 impl Register {
-    pub fn new(n: u8) -> Option<Register> {
-        if 1 <= n && n <= 15 {
-            Some(Register(n))
-        } else {
-            None
-        }
-    }
-
-    pub unsafe fn unchecked_new(n: u8) -> Register {
-        Register(n)
-    }
-
     pub fn num(&self) -> u8 {
         let Register(n) = *self;
         n
@@ -66,27 +79,36 @@ pub enum JumpCondition {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub enum Instruction {
-    Sub(Register, Register, Register),
-    Mov(Register, i16),
-    Jmp(Register, Register, JumpCondition),
-    Ld(Register, Register),
-    St(Register, Register),
+pub enum Instruction<V> {
+    Sub(V, V, V),
+    Mov(V, i16),
+    MovLabel(V, LabelReference),
+    Jmp(V, V, JumpCondition),
+    Ld(V, V),
+    St(V, V),
 }
 
-impl Display for Instruction {
+impl<V> Display for Instruction<V> where V: Display {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match *self {
-            Instruction::Sub(rt, ra, rb) => write!(f, "sub {}, {}, {}", rt, ra, rb),
-            Instruction::Mov(rt, imm) => write!(f, "mov {}, {}", rt, imm),
-            Instruction::Jmp(rt, ra, cond) => match cond {
+        match self {
+            &Instruction::Sub(ref rt, ref ra, ref rb) =>
+                write!(f, "sub {}, {}, {}", rt, ra, rb),
+            &Instruction::Mov(ref rt, imm) =>
+                write!(f, "mov {}, {}", rt, imm),
+            &Instruction::MovLabel(ref rt, lbl) =>
+                write!(f, "mov {}, {}", rt, lbl),
+            &Instruction::Jmp(ref rt, ref ra, cond) => match cond {
                 JumpCondition::Zero    => write!(f, "jz {}, {}", rt, ra),
                 JumpCondition::NotZero => write!(f, "jnz {}, {}", rt, ra),
                 JumpCondition::Sign    => write!(f, "js {}, {}", rt, ra),
                 JumpCondition::NotSign => write!(f, "jns {}, {}", rt, ra),
             },
-            Instruction::Ld(rt, ra) => write!(f, "ld {}, {}", rt, ra),
-            Instruction::St(rt, ra) => write!(f, "st {}, {}", rt, ra),
+            &Instruction::Ld(ref rt, ref ra) =>
+                write!(f, "ld {}, {}", rt, ra),
+            &Instruction::St(ref rt, ref ra) =>
+                write!(f, "st {}, {}", rt, ra),
         }
     }
 }
+
+pub type HWInstruction = Instruction<Register>;
