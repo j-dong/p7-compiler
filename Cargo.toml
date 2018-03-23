@@ -1,0 +1,9 @@
+[package]
+name = "p7-compiler"
+version = "0.1.0"
+authors = ["James Dong <dong.james.sept14@gmail.com>",
+           "Jack Youstra <jack@youstra.com>"]
+repository = "https://github.com/j-dong/p7-compiler"
+license = "GPL-3.0-or-later"
+
+[dependencies]
