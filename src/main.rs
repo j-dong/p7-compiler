@@ -15,7 +15,7 @@
 
 extern crate p7_compiler;
 
-static sample_code: &str = r###"
+static SAMPLE_CODE: &str = r###"
     global my_var;
     main(arg1 arg2) {
         print "hello world";
@@ -23,5 +23,5 @@ static sample_code: &str = r###"
 "###;
 
 fn main() {
-    println!("{:#?}", p7_compiler::parser::ProgramParser::new().parse(sample_code).unwrap());
+    println!("{:#?}", p7_compiler::parser::ProgramParser::new().parse(SAMPLE_CODE).unwrap());
 }
