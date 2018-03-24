@@ -122,6 +122,60 @@ fn compute_liveness(instructions: &Vec<IRInstruction>, label_map: &Vec<usize>) -
     out_set
 }
 
+#[derive(Debug, Clone)]
+struct InterferenceGraph {
+    edges: Vec<Vec<usize>>,
+}
+
+trait ToIndex { fn to_index(&self) -> usize; }
+impl ToIndex for usize { fn to_index(&self) -> usize { *self } }
+impl ToIndex for Temporary { fn to_index(&self) -> usize { let &Temporary(n) = self; n } }
+
+impl InterferenceGraph {
+    fn new(size: usize) -> InterferenceGraph {
+        InterferenceGraph {
+            edges: vec![vec![]; size],
+        }
+    }
+    fn add_edge<A: ToIndex, B: ToIndex>(&mut self, node1: A, node2: B) {
+        let a = node1.to_index();
+        let b = node2.to_index();
+        if a == b { return }
+        assert!(self.edges[a].contains(&b) == self.edges[b].contains(&a));
+        if self.edges[a].contains(&b) {
+            return;
+        }
+        self.edges[a].push(b);
+        self.edges[b].push(a);
+    }
+    fn has_edge<A: ToIndex, B: ToIndex>(&self, node1: A, node2: B) -> bool {
+        let a = node1.to_index();
+        let b = node2.to_index();
+        self.edges[a].contains(&b)
+    }
+}
+
+fn compute_interference_graph(instructions: &Vec<IRInstruction>, liveness: Vec<BitSet>, size: usize) -> InterferenceGraph {
+    let mut ret = InterferenceGraph::new(size);
+    for (inst, live_out) in instructions.iter().zip(liveness.iter()) {
+        if let &IRInstruction::MovReg(dest, Temporary(src)) = inst {
+            for var in live_out {
+                if var != src {
+                    // destination doesn't interfere with source
+                    ret.add_edge(dest, var);
+                }
+            }
+        } else {
+            for gen in inst.def_set().iter() {
+                for var in live_out {
+                    ret.add_edge(gen, var);
+                }
+            }
+        }
+    }
+    ret
+}
+
 pub struct CodeGenerator<'a, W: Write + 'a> {
     out: &'a W,
 }
