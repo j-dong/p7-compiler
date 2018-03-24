@@ -1,4 +1,5 @@
 use std::io::prelude::*;
+use std::cmp;
 use bit_set::BitSet;
 
 use isa;
@@ -154,6 +155,9 @@ impl InterferenceGraph {
             edges: vec![vec![]; size],
         }
     }
+    fn size(&self) -> usize {
+        self.edges.len()
+    }
     fn add_edge<A: ToIndex, B: ToIndex>(&mut self, node1: A, node2: B) {
         let a = node1.to_index();
         let b = node2.to_index();
@@ -165,10 +169,17 @@ impl InterferenceGraph {
         self.edges[a].push(b);
         self.edges[b].push(a);
     }
-    fn has_edge<A: ToIndex, B: ToIndex>(&self, node1: A, node2: B) -> bool {
+    fn remove_edges<A: ToIndex>(&mut self, node1: A) {
         let a = node1.to_index();
-        let b = node2.to_index();
-        self.edges[a].contains(&b)
+        let neighbors = self.edges[a].clone();
+        for b in neighbors.into_iter() {
+            let ia = self.edges[b].iter().position(|&x| x == a).unwrap();
+            self.edges[b].swap_remove(ia);
+        }
+        self.edges[a].clear();
+    }
+    fn degree<A: ToIndex>(&self, node: A) -> usize {
+        self.edges[node.to_index()].len()
     }
 }
 
@@ -191,6 +202,83 @@ fn compute_interference_graph(instructions: &Vec<IRInstruction>, liveness: &Vec<
         }
     }
     ret
+}
+
+#[derive(Debug, PartialEq, PartialOrd, Copy, Clone)]
+struct ValidFloat(f32);
+impl ValidFloat {
+    fn checked(f: f32) -> ValidFloat {
+        assert!(!f.is_nan());
+        ValidFloat(f)
+    }
+}
+impl Ord for ValidFloat {
+    fn cmp(&self, other: &ValidFloat) -> cmp::Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+impl Eq for ValidFloat {}
+
+/// Computes an approximate graph coloring for the given graph.
+///
+/// Return value is `Ok(colors)` or `Err(spill)`,
+/// where `colors` is a map from node to color
+/// and `spill` is a list of spilled nodes.
+fn compute_graph_coloring(graph: &InterferenceGraph, ncolors: usize, spill_costs: &Vec<f32>) -> Result<Vec<usize>, Vec<usize>> {
+    assert_eq!(graph.size(), spill_costs.len());
+    let mut mod_graph = graph.clone();
+    let mut nodes: Vec<_> = (0..graph.size()).collect();
+    let mut stack = vec![];
+    loop {
+        // until all nodes are on stack
+        loop {
+            let node_count = nodes.len();
+            let mut i = 0;
+            let mut done = true;
+            for j in 0..node_count {
+                let node = nodes[i];
+                // remove nodes with fewer than k neighbors
+                if mod_graph.degree(node) < ncolors {
+                    mod_graph.remove_edges(node);
+                    nodes.swap_remove(i);
+                    stack.push(node);
+                    done = false;
+                } else {
+                    i += 1;
+                }
+            }
+            if done { break }
+        }
+        if nodes.len() == 0 { break }
+        // pick node heuristically
+        let (spill_index, &spill_node) = nodes.iter().enumerate().min_by_key(|&(_, &n)| ValidFloat::checked(spill_costs[n] / (mod_graph.degree(n) as f32))).unwrap();
+        nodes.swap_remove(spill_index);
+        mod_graph.remove_edges(spill_node);
+        stack.push(spill_node);
+    }
+    let mut colors: Vec<Option<usize>> = vec![None; graph.size()];
+    let mut available_colors = vec![true; ncolors];
+    let mut to_spill = vec![];
+    while let Some(node) = stack.pop() {
+        assert!(colors[node].is_none());
+        for i in 0..ncolors { available_colors[i] = true; }
+        for &neighbor in &graph.edges[node] {
+            if let Some(color) = colors[neighbor] {
+                available_colors[color] = false;
+            }
+        }
+        let color = available_colors.iter().position(|&x| x);
+        if let Some(c) = color {
+            colors[node] = Some(c);
+        } else {
+            to_spill.push(node);
+        }
+    }
+    if to_spill.len() > 0 {
+        Err(to_spill)
+    } else {
+        Ok(colors.into_iter().collect::<Option<Vec<usize>>>().unwrap())
+    }
 }
 
 pub struct CodeGenerator<'a, W: Write + 'a> {
@@ -251,4 +339,19 @@ fn test_interference() {
     expected.add_edge(label, a);
     expected.add_edge(label, c);
     assert_eq!(ig, expected);
+}
+
+#[test]
+fn test_coloring() {
+    let mut graph = InterferenceGraph::new(5);
+    for i in 0..4 {
+        for j in i+1..4 {
+            graph.add_edge(i, j);
+        }
+    }
+    let spill_costs = vec![100.0f32, 100.0, 0.0, 100.0, 100.0];
+    graph.add_edge(0, 4);
+    assert!(compute_graph_coloring(&graph, 4, &spill_costs).is_ok());
+    assert_eq!(compute_graph_coloring(&graph, 3, &spill_costs),
+        Err(vec![2]));
 }
