@@ -5,7 +5,7 @@ use std::fmt::Formatter;
 use std::fmt::Display;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct NumberedLabel(pub u64);
+pub struct NumberedLabel(pub usize);
 
 impl Display for NumberedLabel {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -15,7 +15,7 @@ impl Display for NumberedLabel {
 }
 
 #[derive(Clone, Debug)]
-pub struct LabelFactory { next: u64 }
+pub struct LabelFactory { next: usize }
 
 impl LabelFactory {
     pub fn new() -> LabelFactory { LabelFactory { next: 0 } }
@@ -24,10 +24,13 @@ impl LabelFactory {
         self.next += 1;
         NumberedLabel(i)
     }
+    pub fn count(&self) -> usize {
+        self.next
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct LabelReference(u64);
+pub struct LabelReference(pub usize);
 
 impl Display for LabelReference {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
