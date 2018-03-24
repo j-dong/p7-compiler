@@ -30,22 +30,29 @@ enum IRInstruction {
     Sub(Temporary, Temporary, Temporary),
     Ld(Temporary, Temporary),
     St(Temporary, Temporary),
-    Call(Temporary, Temporary, Vec<Temporary>),
+    // t0 = call t1
+    Call(Temporary, Temporary),
     // usize are indices in Vec
-    Jmp(usize),
-    CondJmp(isa::JumpCondition, Temporary, usize),
+    // jump instructions require a register
+    Jmp(usize, Temporary),
+    CondJmp(isa::JumpCondition, Temporary, usize, Temporary),
+    Ret(Temporary),
 }
 
 impl IRInstruction {
     fn def_set(&self) -> BitSet {
         let mut ret: BitSet = BitSet::new();
         match self {
-            &IRInstruction::MovReg(t, _)  => { ret.insert(t.num()); }
-            &IRInstruction::MovImm(t, _)  => { ret.insert(t.num()); }
-            &IRInstruction::MovLbl(t, _)  => { ret.insert(t.num()); }
-            &IRInstruction::Sub(t, _, _)  => { ret.insert(t.num()); }
-            &IRInstruction::Ld(t, _)      => { ret.insert(t.num()); }
-            &IRInstruction::Call(t, _, _) => { ret.insert(t.num()); }
+            &IRInstruction::MovReg(t, _) => { ret.insert(t.num()); }
+            &IRInstruction::MovImm(t, _) => { ret.insert(t.num()); }
+            &IRInstruction::MovLbl(t, _) => { ret.insert(t.num()); }
+            &IRInstruction::Sub(t, _, _) => { ret.insert(t.num()); }
+            &IRInstruction::Ld(t, _)     => { ret.insert(t.num()); }
+            &IRInstruction::Call(t, _)   => { ret.insert(t.num()); }
+            &IRInstruction::Jmp(_, t)    => { ret.insert(t.num()); }
+            &IRInstruction::CondJmp(_, _, _, t)
+                                         => { ret.insert(t.num()); }
+            &IRInstruction::Ret(t)       => { ret.insert(t.num()); }
             _ => {}
         }
         ret
@@ -57,20 +64,18 @@ impl IRInstruction {
             &IRInstruction::Sub(_, a, b) => { ret.insert(a.num()); ret.insert(b.num()); }
             &IRInstruction::Ld(_, a)     => { ret.insert(a.num()); }
             &IRInstruction::St(a, b)     => { ret.insert(a.num()); ret.insert(b.num()); }
-            &IRInstruction::Call(_, addr, ref args) => {
-                ret.insert(addr.num());
-                for a in args {
-                    ret.insert(a.num());
-                }
-            }
+            &IRInstruction::Call(_, a)   => { ret.insert(a.num()); }
+            &IRInstruction::CondJmp(_, a, _, _)
+                                         => { ret.insert(a.num()); }
             _ => {}
         }
         ret
     }
     fn succ(&self, i: usize) -> Vec<usize> {
         match self {
-            &IRInstruction::Jmp(a) => vec![a],
-            &IRInstruction::CondJmp(_, _, a) => vec![i + 1, a],
+            &IRInstruction::Jmp(a, _) => vec![a],
+            &IRInstruction::CondJmp(_, _, a, _) => vec![i + 1, a],
+            &IRInstruction::Ret(_) => vec![],
             _ => vec![i + 1],
         }
     }
@@ -112,27 +117,28 @@ pub struct CodeGenerator<'a, W: Write + 'a> {
 #[test]
 fn test_liveness() {
     let mut fac = TemporaryFactory::new();
-    let a = fac.create();
     let one = fac.create();
+    let a = fac.create();
     let b = fac.create();
     let c = fac.create();
     let ret = fac.create();
+    let label = fac.create();
     let instructions = vec![
         IRInstruction::MovImm(a, 0),
         IRInstruction::MovImm(one, 1),
         IRInstruction::Sub(b, a, one),
         IRInstruction::Sub(c, c, b),
         IRInstruction::Sub(a, b, one),
-        IRInstruction::CondJmp(isa::JumpCondition::Zero, a, 2),
+        IRInstruction::CondJmp(isa::JumpCondition::Zero, a, 2, label),
         IRInstruction::MovReg(ret, c),
     ];
     assert_eq!(compute_liveness(&instructions), vec![
-        BitSet::from_bytes(&[0b10010000]), // a, c
-        BitSet::from_bytes(&[0b11010000]), // a, one, c
-        BitSet::from_bytes(&[0b01110000]), // one, b, c
-        BitSet::from_bytes(&[0b01110000]), // one, b, c
-        BitSet::from_bytes(&[0b11010000]), // a, one, c
-        BitSet::from_bytes(&[0b11010000]), // a, one, c
+        BitSet::from_bytes(&[0b01010000]), // a, c
+        BitSet::from_bytes(&[0b11010000]), // one, a, c
+        BitSet::from_bytes(&[0b10110000]), // one, b, c
+        BitSet::from_bytes(&[0b10110000]), // one, b, c
+        BitSet::from_bytes(&[0b11010000]), // one, a, c
+        BitSet::from_bytes(&[0b11010000]), // one, a, c
         BitSet::from_bytes(&[0b00000000]),
     ]);
 }
