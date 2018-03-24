@@ -199,6 +199,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 name = "p7-compiler"
 version = "0.1.0"
 dependencies = [
+ "bit-set 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lalrpop 0.15.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lalrpop-util 0.15.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex 0.2.10 (registry+https://github.com/rust-lang/crates.io-index)",
