@@ -20,6 +20,9 @@ impl TemporaryFactory {
         self.next += 1;
         Temporary(i)
     }
+    fn count(&self) -> usize {
+        self.next
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -127,6 +130,20 @@ struct InterferenceGraph {
     edges: Vec<Vec<usize>>,
 }
 
+impl PartialEq for InterferenceGraph {
+    fn eq(&self, other: &InterferenceGraph) -> bool {
+        if self.edges.len() != other.edges.len() { return false; }
+        for (i, neighbors) in self.edges.iter().enumerate() {
+            if neighbors.len() != other.edges[i].len() { return false; }
+            for neighbor in neighbors {
+                if *neighbor < i { continue }
+                if !other.edges[i].contains(neighbor) { return false; }
+            }
+        }
+        true
+    }
+}
+
 trait ToIndex { fn to_index(&self) -> usize; }
 impl ToIndex for usize { fn to_index(&self) -> usize { *self } }
 impl ToIndex for Temporary { fn to_index(&self) -> usize { let &Temporary(n) = self; n } }
@@ -155,7 +172,7 @@ impl InterferenceGraph {
     }
 }
 
-fn compute_interference_graph(instructions: &Vec<IRInstruction>, liveness: Vec<BitSet>, size: usize) -> InterferenceGraph {
+fn compute_interference_graph(instructions: &Vec<IRInstruction>, liveness: &Vec<BitSet>, size: usize) -> InterferenceGraph {
     let mut ret = InterferenceGraph::new(size);
     for (inst, live_out) in instructions.iter().zip(liveness.iter()) {
         if let &IRInstruction::MovReg(dest, Temporary(src)) = inst {
@@ -181,7 +198,7 @@ pub struct CodeGenerator<'a, W: Write + 'a> {
 }
 
 #[test]
-fn test_liveness() {
+fn test_interference() {
     let mut fac = TemporaryFactory::new();
     let mut label_fac = LabelFactory::new();
     let loop_start = label_fac.create();
@@ -202,7 +219,8 @@ fn test_liveness() {
         IRInstruction::MovReg(ret, c),
     ];
     let label_map = resolve_labels(&instructions, label_fac.count());
-    assert_eq!(compute_liveness(&instructions, &label_map), vec![
+    let liveness = compute_liveness(&instructions, &label_map);
+    assert_eq!(liveness, vec![
         BitSet::from_bytes(&[0b01010000]), // a, c
         BitSet::from_bytes(&[0b11010000]), // one, a, c
         BitSet::from_bytes(&[0b11010000]), // one, a, c
@@ -212,4 +230,25 @@ fn test_liveness() {
         BitSet::from_bytes(&[0b11010000]), // one, a, c
         BitSet::from_bytes(&[0b00000000]),
     ]);
+    // def: a     live: a, c
+    // def: one   live: one, a, c
+    //            live: one, a, c
+    // def: b     live: one, b, c
+    // def: c     live: one, b, c
+    // def: a     live: one, a, c
+    // def: label live: one, a, c
+    // def: ret (move)
+    let num_vars = fac.count();
+    let ig = compute_interference_graph(&instructions, &liveness, num_vars);
+    let mut expected = InterferenceGraph::new(num_vars);
+    expected.add_edge(a, c);
+    expected.add_edge(one, a);
+    expected.add_edge(one, c);
+    expected.add_edge(b, c);
+    expected.add_edge(b, one);
+    expected.add_edge(c, one);
+    expected.add_edge(label, one);
+    expected.add_edge(label, a);
+    expected.add_edge(label, c);
+    assert_eq!(ig, expected);
 }
