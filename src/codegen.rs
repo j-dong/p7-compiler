@@ -47,6 +47,20 @@ enum IRInstruction {
 }
 
 impl IRInstruction {
+    fn is_jump(&self) -> bool {
+        match self {
+            &IRInstruction::Jmp(..) => true,
+            &IRInstruction::CondJmp(..) => true,
+            &IRInstruction::Ret(..) => true,
+            _ => false
+        }
+    }
+    fn is_label(&self) -> bool {
+        match self {
+            &IRInstruction::Label(..) => true,
+            _ => false
+        }
+    }
     fn def_set(&self) -> BitSet {
         let mut ret: BitSet = BitSet::new();
         match self {
@@ -341,6 +355,67 @@ fn compute_spill_costs(instructions: &Vec<IRInstruction>, num_vars: usize) -> Ve
     costs
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BasicBlock {
+    /// Range of instruction indices.
+    range: ops::Range<usize>,
+    /// List of successor indices (at most 2). Sorted.
+    succ: Vec<usize>,
+    /// Whether or not a block is reachable (`true` initially).
+    reachable: bool,
+    /// List of predecessor indices (empty initially).
+    pred: Vec<usize>,
+}
+
+/// Contains a number of basic blocks in sorted order.
+/// The first block is the entry point of the function.
+/// Labels are not included in any basic block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ControlFlowGraph {
+    blocks: Vec<BasicBlock>,
+}
+
+impl ControlFlowGraph {
+    fn start(&self) -> &BasicBlock { &self.blocks[0] }
+}
+
+fn construct_cfg(instructions: &Vec<IRInstruction>, num_labels: usize) -> ControlFlowGraph {
+    let mut ret = ControlFlowGraph { blocks: vec![] };
+    // construct blocks while resolving labels
+    let mut i = 0;
+    let mut label_map = vec![0; num_labels];
+    'segment:
+    while i < instructions.len() {
+        while let &IRInstruction::Label(NumberedLabel(n)) = &instructions[i] {
+            label_map[n] = ret.blocks.len();
+            i += 1;
+            if i >= instructions.len() { break 'segment; }
+        }
+        let range_start = i;
+        let range_end = loop {
+            if instructions[i].is_label() { break i; }
+            if instructions[i].is_jump() { i += 1; break i; }
+            i += 1;
+            if i >= instructions.len() { break i; }
+        };
+        ret.blocks.push(BasicBlock {
+            range: range_start..range_end,
+            succ: vec![],
+            reachable: true,
+            pred: vec![],
+        });
+    }
+    // resolve successors
+    let num_blocks = ret.blocks.len();
+    for (i, block) in ret.blocks.iter_mut().enumerate() {
+        block.succ = instructions[block.range.end - 1].succ(i, &label_map);
+        // also remove successors that don't exist
+        block.succ.retain(|&i| i < num_blocks);
+        block.succ.sort();
+    }
+    ret
+}
+
 pub struct CodeGenerator<'a, W: Write + 'a> {
     out: &'a W,
 }
@@ -418,4 +493,43 @@ fn test_coloring() {
     assert!(compute_graph_coloring(&graph, 4, &spill_costs).is_ok());
     assert_eq!(compute_graph_coloring(&graph, 3, &spill_costs),
         Err(vec![Temporary(2)]));
+}
+
+#[test]
+fn test_cfg() {
+    let mut fac = TemporaryFactory::new();
+    let mut label_fac = LabelFactory::new();
+    let loop_start = label_fac.create();
+    let loop_end = label_fac.create();
+    let one = fac.create();
+    let a = fac.create();
+    let b = fac.create();
+    let c = fac.create();
+    let ret = fac.create();
+    let label = fac.create();
+    let retaddr = fac.create();
+    let instructions = vec![
+        // 0: 0..2 -> 1
+        IRInstruction::MovImm(a, 0),
+        IRInstruction::MovImm(one, 1),
+        IRInstruction::Label(loop_start),
+        // 1: 3..6 -> 2, 3
+        IRInstruction::Sub(b, a, one),
+        IRInstruction::Sub(c, c, b),
+        IRInstruction::CondJmp(isa::JumpCondition::Zero, b, loop_end.get_ref(), label),
+        // 2: 6..8 -> 1, 3
+        IRInstruction::Sub(a, b, one),
+        IRInstruction::CondJmp(isa::JumpCondition::Zero, a, loop_start.get_ref(), label),
+        IRInstruction::Label(loop_end),
+        // 3: 9..11 -> end
+        IRInstruction::MovReg(ret, c),
+        IRInstruction::Ret(retaddr, Some(ret)),
+    ];
+    let cfg = construct_cfg(&instructions, label_fac.count());
+    assert_eq!(cfg, ControlFlowGraph { blocks: vec![
+        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![] },
+        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![] },
+        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![] },
+        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![] },
+    ] });
 }
