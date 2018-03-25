@@ -1,5 +1,7 @@
 use std::io::prelude::*;
 use std::cmp;
+use std::ops;
+use std::vec;
 use bit_set::BitSet;
 
 use isa;
@@ -38,7 +40,6 @@ enum IRInstruction {
     Call(Temporary, Temporary),
     // pseudo-instruction
     Label(NumberedLabel),
-    // usize are indices in Vec
     // jump instructions require a register
     Jmp(LabelReference, Temporary),
     CondJmp(isa::JumpCondition, Temporary, LabelReference, Temporary),
@@ -219,12 +220,45 @@ impl Ord for ValidFloat {
 }
 impl Eq for ValidFloat {}
 
+#[derive(Debug, Clone)]
+struct VariableMap<T>(Vec<T>);
+
+impl<T: Clone + Default> VariableMap<T> {
+    fn new(size: usize) -> VariableMap<T> {
+        VariableMap(vec![Default::default(); size])
+    }
+}
+
+impl<I: ToIndex, T> ops::Index<I> for VariableMap<T> {
+    type Output = T;
+    fn index(&self, index: I) -> &T {
+        &self.0[index.to_index()]
+    }
+}
+
+impl<I: ToIndex, T> ops::IndexMut<I> for VariableMap<T> {
+    fn index_mut(&mut self, index: I) -> &mut T {
+        &mut self.0[index.to_index()]
+    }
+}
+
+impl<T> IntoIterator for VariableMap<T> {
+    type Item = T;
+    type IntoIter = vec::IntoIter<T>;
+    fn into_iter(self) -> vec::IntoIter<T> {
+        self.0.into_iter()
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Color(usize);
+
 /// Computes an approximate graph coloring for the given graph.
 ///
 /// Return value is `Ok(colors)` or `Err(spill)`,
 /// where `colors` is a map from node to color
 /// and `spill` is a list of spilled nodes.
-fn compute_graph_coloring(graph: &InterferenceGraph, ncolors: usize, spill_costs: &Vec<f32>) -> Result<Vec<usize>, Vec<usize>> {
+fn compute_graph_coloring(graph: &InterferenceGraph, ncolors: usize, spill_costs: &Vec<f32>) -> Result<VariableMap<Color>, Vec<Temporary>> {
     assert_eq!(graph.size(), spill_costs.len());
     let mut mod_graph = graph.clone();
     let mut nodes: Vec<_> = (0..graph.size()).collect();
@@ -256,29 +290,35 @@ fn compute_graph_coloring(graph: &InterferenceGraph, ncolors: usize, spill_costs
         mod_graph.remove_edges(spill_node);
         stack.push(spill_node);
     }
-    let mut colors: Vec<Option<usize>> = vec![None; graph.size()];
+    let mut colors: VariableMap<Option<Color>> = VariableMap::new(graph.size());
     let mut available_colors = vec![true; ncolors];
     let mut to_spill = vec![];
     while let Some(node) = stack.pop() {
         assert!(colors[node].is_none());
         for i in 0..ncolors { available_colors[i] = true; }
         for &neighbor in &graph.edges[node] {
-            if let Some(color) = colors[neighbor] {
+            if let Some(Color(color)) = colors[neighbor] {
                 available_colors[color] = false;
             }
         }
         let color = available_colors.iter().position(|&x| x);
         if let Some(c) = color {
-            colors[node] = Some(c);
+            colors[node] = Some(Color(c));
         } else {
-            to_spill.push(node);
+            to_spill.push(Temporary(node));
         }
     }
     if to_spill.len() > 0 {
         Err(to_spill)
     } else {
-        Ok(colors.into_iter().collect::<Option<Vec<usize>>>().unwrap())
+        Ok(VariableMap(colors.into_iter().collect::<Option<Vec<Color>>>().unwrap()))
     }
+}
+
+fn compute_spill_costs(instructions: &Vec<IRInstruction>, num_vars: usize) -> Vec<f32> {
+    let mut costs = vec![];
+    // TODO
+    costs
 }
 
 pub struct CodeGenerator<'a, W: Write + 'a> {
