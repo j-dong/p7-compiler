@@ -37,29 +37,29 @@ enum IRInstruction {
     Ld(Temporary, Temporary),
     St(Temporary, Temporary),
     // t0 = call t1
-    Call(Temporary, Temporary),
+    Call(Temporary, Temporary, Vec<Temporary>),
     // pseudo-instruction
     Label(NumberedLabel),
     // jump instructions require a register
     Jmp(LabelReference, Temporary),
     CondJmp(isa::JumpCondition, Temporary, LabelReference, Temporary),
-    Ret(Temporary),
+    Ret(Temporary, Option<Temporary>),
 }
 
 impl IRInstruction {
     fn def_set(&self) -> BitSet {
         let mut ret: BitSet = BitSet::new();
         match self {
-            &IRInstruction::MovReg(t, _) => { ret.insert(t.num()); }
-            &IRInstruction::MovImm(t, _) => { ret.insert(t.num()); }
-            &IRInstruction::MovLbl(t, _) => { ret.insert(t.num()); }
-            &IRInstruction::Sub(t, _, _) => { ret.insert(t.num()); }
-            &IRInstruction::Ld(t, _)     => { ret.insert(t.num()); }
-            &IRInstruction::Call(t, _)   => { ret.insert(t.num()); }
-            &IRInstruction::Jmp(_, t)    => { ret.insert(t.num()); }
+            &IRInstruction::MovReg(t, _)  => { ret.insert(t.num()); }
+            &IRInstruction::MovImm(t, _)  => { ret.insert(t.num()); }
+            &IRInstruction::MovLbl(t, _)  => { ret.insert(t.num()); }
+            &IRInstruction::Sub(t, _, _)  => { ret.insert(t.num()); }
+            &IRInstruction::Ld(t, _)      => { ret.insert(t.num()); }
+            &IRInstruction::Call(t, _, _) => { ret.insert(t.num()); }
+            &IRInstruction::Jmp(_, t)     => { ret.insert(t.num()); }
             &IRInstruction::CondJmp(_, _, _, t)
-                                         => { ret.insert(t.num()); }
-            &IRInstruction::Ret(t)       => { ret.insert(t.num()); }
+                                          => { ret.insert(t.num()); }
+            &IRInstruction::Ret(t, _)     => { ret.insert(t.num()); }
             _ => {}
         }
         ret
@@ -71,8 +71,15 @@ impl IRInstruction {
             &IRInstruction::Sub(_, a, b) => { ret.insert(a.num()); ret.insert(b.num()); }
             &IRInstruction::Ld(_, a)     => { ret.insert(a.num()); }
             &IRInstruction::St(a, b)     => { ret.insert(a.num()); ret.insert(b.num()); }
-            &IRInstruction::Call(_, a)   => { ret.insert(a.num()); }
+            &IRInstruction::Call(_, a, ref args) => {
+                ret.insert(a.num());
+                for arg in args {
+                    ret.insert(arg.num());
+                }
+            }
             &IRInstruction::CondJmp(_, a, _, _)
+                                         => { ret.insert(a.num()); }
+            &IRInstruction::Ret(_, Some(a))
                                          => { ret.insert(a.num()); }
             _ => {}
         }
@@ -82,7 +89,7 @@ impl IRInstruction {
         match self {
             &IRInstruction::Jmp(LabelReference(n), _) => vec![label_map[n]],
             &IRInstruction::CondJmp(_, _, LabelReference(n), _) => vec![i + 1, label_map[n]],
-            &IRInstruction::Ret(_) => vec![],
+            &IRInstruction::Ret(_, _) => vec![],
             _ => vec![i + 1],
         }
     }
@@ -114,6 +121,10 @@ fn compute_liveness(instructions: &Vec<IRInstruction>, label_map: &Vec<usize>) -
             for s in instructions[i].succ(i, &label_map) {
                 if s == num_inst { continue }
                 out_set[i].union_with(&in_set[s]);
+            }
+            if let &IRInstruction::Ret(_, Some(a)) = &instructions[i] {
+                // return value must continue to live past return
+                out_set[i].insert(a.num());
             }
             in_set[i] = out_set[i].clone();
             in_set[i].difference_with(&instructions[i].def_set());
@@ -220,7 +231,7 @@ impl Ord for ValidFloat {
 }
 impl Eq for ValidFloat {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct VariableMap<T>(Vec<T>);
 
 impl<T: Clone + Default> VariableMap<T> {
@@ -336,6 +347,7 @@ fn test_interference() {
     let c = fac.create();
     let ret = fac.create();
     let label = fac.create();
+    let retaddr = fac.create();
     let instructions = vec![
         IRInstruction::MovImm(a, 0),
         IRInstruction::MovImm(one, 1),
@@ -345,6 +357,7 @@ fn test_interference() {
         IRInstruction::Sub(a, b, one),
         IRInstruction::CondJmp(isa::JumpCondition::Zero, a, loop_start.get_ref(), label),
         IRInstruction::MovReg(ret, c),
+        IRInstruction::Ret(retaddr, Some(ret)),
     ];
     let label_map = resolve_labels(&instructions, label_fac.count());
     let liveness = compute_liveness(&instructions, &label_map);
@@ -356,7 +369,8 @@ fn test_interference() {
         BitSet::from_bytes(&[0b10110000]), // one, b, c
         BitSet::from_bytes(&[0b11010000]), // one, a, c
         BitSet::from_bytes(&[0b11010000]), // one, a, c
-        BitSet::from_bytes(&[0b00000000]),
+        BitSet::from_bytes(&[0b00001000]), // ret
+        BitSet::from_bytes(&[0b00001000]), // ret
     ]);
     // def: a     live: a, c
     // def: one   live: one, a, c
@@ -365,7 +379,7 @@ fn test_interference() {
     // def: c     live: one, b, c
     // def: a     live: one, a, c
     // def: label live: one, a, c
-    // def: ret (move)
+    // def: ret (move) live: ret
     let num_vars = fac.count();
     let ig = compute_interference_graph(&instructions, &liveness, num_vars);
     let mut expected = InterferenceGraph::new(num_vars);
@@ -378,6 +392,7 @@ fn test_interference() {
     expected.add_edge(label, one);
     expected.add_edge(label, a);
     expected.add_edge(label, c);
+    expected.add_edge(ret, retaddr);
     assert_eq!(ig, expected);
 }
 
@@ -393,5 +408,5 @@ fn test_coloring() {
     graph.add_edge(0, 4);
     assert!(compute_graph_coloring(&graph, 4, &spill_costs).is_ok());
     assert_eq!(compute_graph_coloring(&graph, 3, &spill_costs),
-        Err(vec![2]));
+        Err(vec![Temporary(2)]));
 }
