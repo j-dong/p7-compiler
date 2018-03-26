@@ -288,6 +288,8 @@ impl<T> IntoIterator for VariableMap<T> {
 struct Color(usize);
 
 /// Computes an approximate graph coloring for the given graph.
+/// Algorithm used is by Preston Briggs
+/// [Register Allocation via Graph Coloring (1992)].
 ///
 /// Return value is `Ok(colors)` or `Err(spill)`,
 /// where `colors` is a map from node to color
@@ -303,7 +305,7 @@ fn compute_graph_coloring(graph: &InterferenceGraph, ncolors: usize, spill_costs
             let node_count = nodes.len();
             let mut i = 0;
             let mut done = true;
-            for j in 0..node_count {
+            for _ in 0..node_count {
                 let node = nodes[i];
                 // remove nodes with fewer than k neighbors
                 if mod_graph.degree(node) < ncolors {
@@ -363,8 +365,10 @@ struct BasicBlock {
     succ: Vec<usize>,
     /// Whether or not a block is reachable (`true` initially).
     reachable: bool,
-    /// List of predecessor indices (empty initially).
+    /// List of predecessor indices.
     pred: Vec<usize>,
+    /// Immediate dominator (0 initially).
+    idom: usize,
 }
 
 /// Contains a number of basic blocks in sorted order.
@@ -403,17 +407,35 @@ fn construct_cfg(instructions: &Vec<IRInstruction>, num_labels: usize) -> Contro
             succ: vec![],
             reachable: true,
             pred: vec![],
+            idom: 0,
         });
     }
     // resolve successors
     let num_blocks = ret.blocks.len();
-    for (i, block) in ret.blocks.iter_mut().enumerate() {
-        block.succ = instructions[block.range.end - 1].succ(i, &label_map);
-        // also remove successors that don't exist
-        block.succ.retain(|&i| i < num_blocks);
-        block.succ.sort();
+    for i in 0..num_blocks {
+        {
+            let block = &mut ret.blocks[i];
+            block.succ = instructions[block.range.end - 1].succ(i, &label_map);
+            // also remove successors that don't exist
+            block.succ.retain(|&i| i < num_blocks);
+            block.succ.sort();
+        }
+        let succ = ret.blocks[i].succ.clone();
+        for j in succ.into_iter() {
+            ret.blocks[j].pred.push(i);
+        }
     }
     ret
+}
+
+impl ControlFlowGraph {
+    /// Computes immediate dominators for each block,
+    /// forming a dominator tree.
+    /// Algorithm used is by Cooper, Harvey, and Kennedy
+    /// [A Simple, Fast Dominance Algorithm (2001)].
+    fn compute_dominators(&mut self) {
+        panic!()
+    }
 }
 
 pub struct CodeGenerator<'a, W: Write + 'a> {
@@ -527,9 +549,9 @@ fn test_cfg() {
     ];
     let cfg = construct_cfg(&instructions, label_fac.count());
     assert_eq!(cfg, ControlFlowGraph { blocks: vec![
-        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![] },
-        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![] },
-        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![] },
-        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![] },
+        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![],     idom: 0 },
+        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![0, 2], idom: 0 },
+        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![1],    idom: 0 },
+        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![1, 2], idom: 0 },
     ] });
 }
