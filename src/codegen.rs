@@ -456,20 +456,21 @@ impl ControlFlowGraph {
             order.reverse();
             order
         };
-        println!("rpo: {:?}", rpo);
         const UNDEFINED: usize = ::std::usize::MAX;
         for block in self.blocks.iter_mut() {
             block.idom = UNDEFINED;
             block.reachable = false;
         }
-        let block_to_rpo = {
+        let block_to_po = {
             let mut map = vec![0; self.blocks.len()];
             for (idx, &i) in rpo.iter().enumerate() {
-                map[i] = idx;
+                map[i] = rpo.len() - idx;
                 self.blocks[i].reachable = true;
             }
+            map[0] = rpo.len() + 1;
             map
         };
+        self.blocks[0].reachable = true;
         self.blocks[0].idom = 0;
         loop {
             let mut changed = false;
@@ -483,9 +484,9 @@ impl ControlFlowGraph {
                         let mut finger1: usize = idom;
                         let mut finger2: usize = pred;
                         while finger1 != finger2 {
-                            if block_to_rpo[finger1] > block_to_rpo[finger2] {
+                            if block_to_po[finger1] < block_to_po[finger2] {
                                 finger1 = self.blocks[finger1].idom;
-                            } else if block_to_rpo[finger2] > block_to_rpo[finger1] {
+                            } else if block_to_po[finger2] < block_to_po[finger1] {
                                 finger2 = self.blocks[finger2].idom;
                             }
                         }
