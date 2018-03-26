@@ -456,8 +456,20 @@ impl ControlFlowGraph {
             order.reverse();
             order
         };
+        println!("rpo: {:?}", rpo);
         const UNDEFINED: usize = ::std::usize::MAX;
-        for block in self.blocks.iter_mut() { block.idom = UNDEFINED; }
+        for block in self.blocks.iter_mut() {
+            block.idom = UNDEFINED;
+            block.reachable = false;
+        }
+        let block_to_rpo = {
+            let mut map = vec![0; self.blocks.len()];
+            for (idx, &i) in rpo.iter().enumerate() {
+                map[i] = idx;
+                self.blocks[i].reachable = true;
+            }
+            map
+        };
         self.blocks[0].idom = 0;
         loop {
             let mut changed = false;
@@ -471,9 +483,9 @@ impl ControlFlowGraph {
                         let mut finger1: usize = idom;
                         let mut finger2: usize = pred;
                         while finger1 != finger2 {
-                            if finger1 < finger2 {
+                            if block_to_rpo[finger1] > block_to_rpo[finger2] {
                                 finger1 = self.blocks[finger1].idom;
-                            } else if finger2 < finger1 {
+                            } else if block_to_rpo[finger2] > block_to_rpo[finger1] {
                                 finger2 = self.blocks[finger2].idom;
                             }
                         }
@@ -599,11 +611,18 @@ fn test_cfg() {
         IRInstruction::MovReg(ret, c),
         IRInstruction::Ret(retaddr, Some(ret)),
     ];
-    let cfg = construct_cfg(&instructions, label_fac.count());
+    let mut cfg = construct_cfg(&instructions, label_fac.count());
     assert_eq!(cfg, ControlFlowGraph { blocks: vec![
         BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![],     idom: 0 },
         BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![0, 2], idom: 0 },
         BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![1],    idom: 0 },
         BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![1, 2], idom: 0 },
+    ] });
+    cfg.compute_dominators();
+    assert_eq!(cfg, ControlFlowGraph { blocks: vec![
+        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![],     idom: 0 },
+        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![0, 2], idom: 0 },
+        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![1],    idom: 1 },
+        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![1, 2], idom: 1 },
     ] });
 }
