@@ -429,12 +429,64 @@ fn construct_cfg(instructions: &Vec<IRInstruction>, num_labels: usize) -> Contro
 }
 
 impl ControlFlowGraph {
+    fn postorder(&self, start: usize, order: &mut Vec<usize>, visited: &mut Vec<bool>) {
+        assert!(!visited[start]);
+        visited[start] = true;
+        for &succ in &self.blocks[start].succ {
+            if !visited[succ] {
+                self.postorder(succ, order, visited);
+            }
+        }
+        order.push(start);
+    }
+
     /// Computes immediate dominators for each block,
     /// forming a dominator tree.
+    /// Also sets reachable.
     /// Algorithm used is by Cooper, Harvey, and Kennedy
     /// [A Simple, Fast Dominance Algorithm (2001)].
     fn compute_dominators(&mut self) {
-        panic!()
+        // compute RPO (except first)
+        let rpo = {
+            let mut order = vec![];
+            let mut visited = vec![false; self.blocks.len()];
+            self.postorder(0, &mut order, &mut visited);
+            let popped = order.pop();
+            assert!(popped == Some(0));
+            order.reverse();
+            order
+        };
+        const UNDEFINED: usize = ::std::usize::MAX;
+        for block in self.blocks.iter_mut() { block.idom = UNDEFINED; }
+        self.blocks[0].idom = 0;
+        loop {
+            let mut changed = false;
+            for &i in &rpo {
+                // taken in part from petgraph
+                let new_idom = {
+                    let mut defined_preds = self.blocks[i].pred.iter().filter(|&&p| self.blocks[p].idom != UNDEFINED);
+                    let first_pred = *defined_preds.next().unwrap();
+                    defined_preds.fold(first_pred, |idom, &pred| {
+                        // insersect function
+                        let mut finger1: usize = idom;
+                        let mut finger2: usize = pred;
+                        while finger1 != finger2 {
+                            if finger1 < finger2 {
+                                finger1 = self.blocks[finger1].idom;
+                            } else if finger2 < finger1 {
+                                finger2 = self.blocks[finger2].idom;
+                            }
+                        }
+                        finger1
+                    })
+                };
+                if self.blocks[i].idom != new_idom {
+                    self.blocks[i].idom = new_idom;
+                    changed = true;
+                }
+            }
+            if !changed { break; }
+        }
     }
 }
 
