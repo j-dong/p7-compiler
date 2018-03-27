@@ -30,51 +30,52 @@ impl TemporaryFactory {
 
 #[derive(Clone, Debug)]
 enum IRInstruction {
-    MovReg(Temporary, Temporary),
-    MovImm(Temporary, i16),
-    MovLbl(Temporary, LabelReference),
-    Sub(Temporary, Temporary, Temporary),
-    Ld(Temporary, Temporary),
-    St(Temporary, Temporary),
-    // t0 = call t1(...); requires return address to be in register
-    Call(Temporary, Temporary, Vec<Temporary>, Temporary),
+    MovReg { dest: Temporary, src: Temporary },
+    MovImm { dest: Temporary, imm: i16 },
+    MovLbl { dest: Temporary, lbl: LabelReference },
+    Sub { dest: Temporary, a: Temporary, b: Temporary },
+    Ld { dest: Temporary, addr: Temporary },
+    St { src:  Temporary, addr: Temporary },
+    Alloca { bytes: usize },
+    LdStack { dest: Temporary, offset: usize },
+    // t0 = call t1(...)
+    Call { dest: Temporary, addr: Temporary, args: Vec<Temporary> },
     // pseudo-instruction
     Label(NumberedLabel),
     // jump instructions require a register
-    Jmp(LabelReference, Temporary),
-    CondJmp(isa::JumpCondition, Temporary, LabelReference, Temporary),
-    Ret(Temporary, Option<Temporary>),
+    Jmp { target: LabelReference, addr: Temporary },
+    CondJmp { cond: isa::JumpCondition, reg: Temporary, target: LabelReference, addr: Temporary },
+    Ret { addr: Temporary, value: Option<Temporary> },
 }
 
 impl IRInstruction {
     fn is_jump(&self) -> bool {
         match self {
-            &IRInstruction::Jmp(..) => true,
-            &IRInstruction::CondJmp(..) => true,
-            &IRInstruction::Ret(..) => true,
+            &IRInstruction::Jmp{..} => true,
+            &IRInstruction::CondJmp{..} => true,
+            &IRInstruction::Ret{..} => true,
             _ => false
         }
     }
     fn is_label(&self) -> bool {
         match self {
-            &IRInstruction::Label(..) => true,
+            &IRInstruction::Label{..} => true,
             _ => false
         }
     }
     fn def_set(&self) -> BitSet {
         let mut ret: BitSet = BitSet::new();
         match self {
-            &IRInstruction::MovReg(t, _)  => { ret.insert(t.num()); }
-            &IRInstruction::MovImm(t, _)  => { ret.insert(t.num()); }
-            &IRInstruction::MovLbl(t, _)  => { ret.insert(t.num()); }
-            &IRInstruction::Sub(t, _, _)  => { ret.insert(t.num()); }
-            &IRInstruction::Ld(t, _)      => { ret.insert(t.num()); }
-            &IRInstruction::Call(t, _, _, a)
-                                          => { ret.insert(t.num()); ret.insert(a.num()); }
-            &IRInstruction::Jmp(_, t)     => { ret.insert(t.num()); }
-            &IRInstruction::CondJmp(_, _, _, t)
-                                          => { ret.insert(t.num()); }
-            &IRInstruction::Ret(t, _)     => { ret.insert(t.num()); }
+            &IRInstruction::MovReg { dest, .. }  => { ret.insert(dest.num()); }
+            &IRInstruction::MovImm { dest, .. }  => { ret.insert(dest.num()); }
+            &IRInstruction::MovLbl { dest, .. }  => { ret.insert(dest.num()); }
+            &IRInstruction::Sub { dest, .. }     => { ret.insert(dest.num()); }
+            &IRInstruction::Ld { dest, .. }      => { ret.insert(dest.num()); }
+            &IRInstruction::LdStack { dest, .. } => { ret.insert(dest.num()); }
+            &IRInstruction::Call { dest, .. }    => { ret.insert(dest.num()); }
+            &IRInstruction::Jmp { addr, .. }     => { ret.insert(addr.num()); }
+            &IRInstruction::CondJmp { addr, .. } => { ret.insert(addr.num()); }
+            &IRInstruction::Ret { addr, .. }     => { ret.insert(addr.num()); }
             _ => {}
         }
         ret
@@ -82,20 +83,18 @@ impl IRInstruction {
     fn use_set(&self) -> BitSet {
         let mut ret: BitSet = BitSet::new();
         match self {
-            &IRInstruction::MovReg(_, a) => { ret.insert(a.num()); }
-            &IRInstruction::Sub(_, a, b) => { ret.insert(a.num()); ret.insert(b.num()); }
-            &IRInstruction::Ld(_, a)     => { ret.insert(a.num()); }
-            &IRInstruction::St(a, b)     => { ret.insert(a.num()); ret.insert(b.num()); }
-            &IRInstruction::Call(_, a, ref args, _) => {
-                ret.insert(a.num());
+            &IRInstruction::MovReg { src, .. } => { ret.insert(src.num()); }
+            &IRInstruction::Sub { a, b, .. } => { ret.insert(a.num()); ret.insert(b.num()); }
+            &IRInstruction::Ld { addr, .. } => { ret.insert(addr.num()); }
+            &IRInstruction::St { src, addr } => { ret.insert(src.num()); ret.insert(addr.num()); }
+            &IRInstruction::Call { addr, ref args, .. } => {
+                ret.insert(addr.num());
                 for arg in args {
                     ret.insert(arg.num());
                 }
             }
-            &IRInstruction::CondJmp(_, a, _, _)
-                                         => { ret.insert(a.num()); }
-            &IRInstruction::Ret(_, Some(a))
-                                         => { ret.insert(a.num()); }
+            &IRInstruction::CondJmp { reg, .. } => { ret.insert(reg.num()); }
+            &IRInstruction::Ret { value: Some(val), .. } => { ret.insert(val.num()); }
             _ => {}
         }
         ret
@@ -104,16 +103,16 @@ impl IRInstruction {
         // used variables that cannot be assigned the same register
         // as a defined variable
         match self {
-            &IRInstruction::CondJmp(_, a, _, _) => vec![a],
-            &IRInstruction::Ret(_, Some(a)) => vec![a],
+            &IRInstruction::CondJmp { reg, .. } => vec![reg],
+            &IRInstruction::Ret { value: Some(value), .. } => vec![value],
             _ => vec![]
         }
     }
     fn succ(&self, i: usize, label_map: &Vec<usize>) -> Vec<usize> {
         match self {
-            &IRInstruction::Jmp(LabelReference(n), _) => vec![label_map[n]],
-            &IRInstruction::CondJmp(_, _, LabelReference(n), _) => vec![i + 1, label_map[n]],
-            &IRInstruction::Ret(_, _) => vec![],
+            &IRInstruction::Jmp { target: LabelReference(n), .. } => vec![label_map[n]],
+            &IRInstruction::CondJmp {target: LabelReference(n), .. } => vec![i + 1, label_map[n]],
+            &IRInstruction::Ret { .. } => vec![],
             _ => vec![i + 1],
         }
     }
@@ -218,7 +217,7 @@ impl InterferenceGraph {
 fn compute_interference_graph(instructions: &Vec<IRInstruction>, liveness: &Vec<BitSet>, size: usize) -> InterferenceGraph {
     let mut ret = InterferenceGraph::new(size);
     for (inst, live_out) in instructions.iter().zip(liveness.iter()) {
-        if let &IRInstruction::MovReg(dest, Temporary(src)) = inst {
+        if let &IRInstruction::MovReg { dest, src: Temporary(src) } = inst {
             for var in live_out {
                 if var != src {
                     // destination doesn't interfere with source
@@ -433,15 +432,15 @@ fn test_interference() {
     let label = fac.create();
     let retaddr = fac.create();
     let instructions = vec![
-        IRInstruction::MovImm(a, 0),
-        IRInstruction::MovImm(one, 1),
+        IRInstruction::MovImm { dest: a, imm: 0 },
+        IRInstruction::MovImm { dest: one, imm: 1 },
         IRInstruction::Label(loop_start),
-        IRInstruction::Sub(b, a, one),
-        IRInstruction::Sub(c, c, b),
-        IRInstruction::Sub(a, b, one),
-        IRInstruction::CondJmp(isa::JumpCondition::Zero, a, loop_start.get_ref(), label),
-        IRInstruction::MovReg(ret, c),
-        IRInstruction::Ret(retaddr, Some(ret)),
+        IRInstruction::Sub { dest: b, a: a, b: one },
+        IRInstruction::Sub { dest: c, a: c, b: b },
+        IRInstruction::Sub { dest: a, a: b, b: one },
+        IRInstruction::CondJmp { cond: isa::JumpCondition::Zero, reg: a, target: loop_start.get_ref(), addr: label },
+        IRInstruction::MovReg { dest: ret, src: c },
+        IRInstruction::Ret { addr: retaddr, value: Some(ret) },
     ];
     let label_map = resolve_labels(&instructions, label_fac.count());
     let liveness = compute_liveness(&instructions, &label_map);
@@ -510,20 +509,20 @@ fn test_cfg() {
     let retaddr = fac.create();
     let instructions = vec![
         // 0: 0..2 -> 1
-        IRInstruction::MovImm(a, 0),
-        IRInstruction::MovImm(one, 1),
+        IRInstruction::MovImm { dest: a, imm: 0 },
+        IRInstruction::MovImm { dest: one, imm: 1 },
         IRInstruction::Label(loop_start),
         // 1: 3..6 -> 2, 3
-        IRInstruction::Sub(b, a, one),
-        IRInstruction::Sub(c, c, b),
-        IRInstruction::CondJmp(isa::JumpCondition::Zero, b, loop_end.get_ref(), label),
+        IRInstruction::Sub { dest: b, a: a, b: one },
+        IRInstruction::Sub { dest: c, a: c, b: b },
+        IRInstruction::CondJmp { cond: isa::JumpCondition::Zero, reg: b, target: loop_end.get_ref(), addr: label },
         // 2: 6..8 -> 1, 3
-        IRInstruction::Sub(a, b, one),
-        IRInstruction::CondJmp(isa::JumpCondition::Zero, a, loop_start.get_ref(), label),
+        IRInstruction::Sub { dest: a, a: b, b: one },
+        IRInstruction::CondJmp { cond: isa::JumpCondition::Zero, reg: a, target: loop_start.get_ref(), addr: label },
         IRInstruction::Label(loop_end),
         // 3: 9..11 -> end
-        IRInstruction::MovReg(ret, c),
-        IRInstruction::Ret(retaddr, Some(ret)),
+        IRInstruction::MovReg { dest: ret, src: c },
+        IRInstruction::Ret { addr: retaddr, value: Some(ret) },
     ];
     let cfg = construct_cfg(&instructions, label_fac.count());
     assert_eq!(cfg, ControlFlowGraph { blocks: vec![
