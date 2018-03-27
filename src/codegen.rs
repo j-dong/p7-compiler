@@ -287,6 +287,8 @@ impl<T> IntoIterator for VariableMap<T> {
 struct Color(usize);
 
 /// Computes an approximate graph coloring for the given graph.
+/// Algorithm used is by Preston Briggs
+/// [Register Allocation via Graph Coloring (1992)].
 ///
 /// Return value is `Ok(colors)` or `Err(spill)`,
 /// where `colors` is a map from node to color
@@ -302,7 +304,7 @@ fn compute_graph_coloring(graph: &InterferenceGraph, ncolors: usize, spill_costs
             let node_count = nodes.len();
             let mut i = 0;
             let mut done = true;
-            for j in 0..node_count {
+            for _ in 0..node_count {
                 let node = nodes[i];
                 // remove nodes with fewer than k neighbors
                 if mod_graph.degree(node) < ncolors {
@@ -362,8 +364,10 @@ struct BasicBlock {
     succ: Vec<usize>,
     /// Whether or not a block is reachable (`true` initially).
     reachable: bool,
-    /// List of predecessor indices (empty initially).
+    /// List of predecessor indices.
     pred: Vec<usize>,
+    /// Immediate dominator (0 initially).
+    idom: usize,
 }
 
 /// Contains a number of basic blocks in sorted order.
@@ -402,17 +406,100 @@ fn construct_cfg(instructions: &Vec<IRInstruction>, num_labels: usize) -> Contro
             succ: vec![],
             reachable: true,
             pred: vec![],
+            idom: 0,
         });
     }
     // resolve successors
     let num_blocks = ret.blocks.len();
-    for (i, block) in ret.blocks.iter_mut().enumerate() {
-        block.succ = instructions[block.range.end - 1].succ(i, &label_map);
-        // also remove successors that don't exist
-        block.succ.retain(|&i| i < num_blocks);
-        block.succ.sort();
+    for i in 0..num_blocks {
+        {
+            let block = &mut ret.blocks[i];
+            block.succ = instructions[block.range.end - 1].succ(i, &label_map);
+            // also remove successors that don't exist
+            block.succ.retain(|&i| i < num_blocks);
+            block.succ.sort();
+        }
+        let succ = ret.blocks[i].succ.clone();
+        for j in succ.into_iter() {
+            ret.blocks[j].pred.push(i);
+        }
     }
     ret
+}
+
+impl ControlFlowGraph {
+    fn postorder(&self, start: usize, order: &mut Vec<usize>, visited: &mut Vec<bool>) {
+        assert!(!visited[start]);
+        visited[start] = true;
+        for &succ in &self.blocks[start].succ {
+            if !visited[succ] {
+                self.postorder(succ, order, visited);
+            }
+        }
+        order.push(start);
+    }
+
+    /// Computes immediate dominators for each block,
+    /// forming a dominator tree.
+    /// Also sets reachable.
+    /// Algorithm used is by Cooper, Harvey, and Kennedy
+    /// [A Simple, Fast Dominance Algorithm (2001)].
+    fn compute_dominators(&mut self) {
+        // compute RPO (except first)
+        let rpo = {
+            let mut order = vec![];
+            let mut visited = vec![false; self.blocks.len()];
+            self.postorder(0, &mut order, &mut visited);
+            let popped = order.pop();
+            assert!(popped == Some(0));
+            order.reverse();
+            order
+        };
+        const UNDEFINED: usize = ::std::usize::MAX;
+        for block in self.blocks.iter_mut() {
+            block.idom = UNDEFINED;
+            block.reachable = false;
+        }
+        let block_to_po = {
+            let mut map = vec![0; self.blocks.len()];
+            for (idx, &i) in rpo.iter().enumerate() {
+                map[i] = rpo.len() - idx;
+                self.blocks[i].reachable = true;
+            }
+            map[0] = rpo.len() + 1;
+            map
+        };
+        self.blocks[0].reachable = true;
+        self.blocks[0].idom = 0;
+        loop {
+            let mut changed = false;
+            for &i in &rpo {
+                // taken in part from petgraph
+                let new_idom = {
+                    let mut defined_preds = self.blocks[i].pred.iter().filter(|&&p| self.blocks[p].idom != UNDEFINED);
+                    let first_pred = *defined_preds.next().unwrap();
+                    defined_preds.fold(first_pred, |idom, &pred| {
+                        // insersect function
+                        let mut finger1: usize = idom;
+                        let mut finger2: usize = pred;
+                        while finger1 != finger2 {
+                            if block_to_po[finger1] < block_to_po[finger2] {
+                                finger1 = self.blocks[finger1].idom;
+                            } else if block_to_po[finger2] < block_to_po[finger1] {
+                                finger2 = self.blocks[finger2].idom;
+                            }
+                        }
+                        finger1
+                    })
+                };
+                if self.blocks[i].idom != new_idom {
+                    self.blocks[i].idom = new_idom;
+                    changed = true;
+                }
+            }
+            if !changed { break; }
+        }
+    }
 }
 
 pub struct CodeGenerator<'a, W: Write + 'a> {
@@ -524,11 +611,18 @@ fn test_cfg() {
         IRInstruction::MovReg { dest: ret, src: c },
         IRInstruction::Ret { addr: retaddr, value: Some(ret) },
     ];
-    let cfg = construct_cfg(&instructions, label_fac.count());
+    let mut cfg = construct_cfg(&instructions, label_fac.count());
     assert_eq!(cfg, ControlFlowGraph { blocks: vec![
-        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![] },
-        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![] },
-        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![] },
-        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![] },
+        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![],     idom: 0 },
+        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![0, 2], idom: 0 },
+        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![1],    idom: 0 },
+        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![1, 2], idom: 0 },
+    ] });
+    cfg.compute_dominators();
+    assert_eq!(cfg, ControlFlowGraph { blocks: vec![
+        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![],     idom: 0 },
+        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![0, 2], idom: 0 },
+        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![1],    idom: 1 },
+        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![1, 2], idom: 1 },
     ] });
 }
