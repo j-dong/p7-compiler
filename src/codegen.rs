@@ -368,6 +368,8 @@ struct BasicBlock {
     pred: Vec<usize>,
     /// Immediate dominator (0 initially).
     idom: usize,
+    /// Loop depth (0 initially).
+    depth: usize,
 }
 
 /// Contains a number of basic blocks in sorted order.
@@ -380,6 +382,12 @@ struct ControlFlowGraph {
 
 impl ControlFlowGraph {
     fn start(&self) -> &BasicBlock { &self.blocks[0] }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Loop {
+    header: usize,
+    body: Vec<usize>,
 }
 
 fn construct_cfg(instructions: &Vec<IRInstruction>, num_labels: usize) -> ControlFlowGraph {
@@ -407,6 +415,7 @@ fn construct_cfg(instructions: &Vec<IRInstruction>, num_labels: usize) -> Contro
             reachable: true,
             pred: vec![],
             idom: 0,
+            depth: 0,
         });
     }
     // resolve successors
@@ -499,6 +508,50 @@ impl ControlFlowGraph {
             }
             if !changed { break; }
         }
+    }
+
+    fn detect_natural_loops(&mut self) -> Vec<Loop> {
+        // identify back-edges
+        let mut body = vec![];
+        let mut stack = vec![];
+        let mut loops = vec![];
+        for h in 0..self.blocks.len() {
+            body.clear();
+            for i in 0..self.blocks[h].pred.len() {
+                let n = self.blocks[h].pred[i];
+                // check if h dominates n
+                let dominates = {
+                    let mut n = n;
+                    loop {
+                        if n == h {
+                            break true;
+                        }
+                        if n == 0 {
+                            break false;
+                        }
+                        n = self.blocks[n].idom;
+                    }
+                };
+                if !dominates { continue; }
+                body.push(h);
+                stack.clear();
+                stack.push(n);
+                self.blocks[h].depth += 1;
+                while let Some(d) = stack.pop() {
+                    if body.contains(&d) { continue; }
+                    body.push(d);
+                    self.blocks[d].depth += 1;
+                    stack.extend(self.blocks[d].pred.iter());
+                }
+            }
+            if !body.is_empty() {
+                loops.push(Loop {
+                    header: h,
+                    body: body.clone(),
+                });
+            }
+        }
+        loops
     }
 }
 
@@ -613,16 +666,26 @@ fn test_cfg() {
     ];
     let mut cfg = construct_cfg(&instructions, label_fac.count());
     assert_eq!(cfg, ControlFlowGraph { blocks: vec![
-        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![],     idom: 0 },
-        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![0, 2], idom: 0 },
-        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![1],    idom: 0 },
-        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![1, 2], idom: 0 },
+        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![],     idom: 0, depth: 0 },
+        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![0, 2], idom: 0, depth: 0 },
+        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![1],    idom: 0, depth: 0 },
+        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![1, 2], idom: 0, depth: 0 },
     ] });
     cfg.compute_dominators();
     assert_eq!(cfg, ControlFlowGraph { blocks: vec![
-        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![],     idom: 0 },
-        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![0, 2], idom: 0 },
-        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![1],    idom: 1 },
-        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![1, 2], idom: 1 },
+        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![],     idom: 0, depth: 0 },
+        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![0, 2], idom: 0, depth: 0 },
+        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![1],    idom: 1, depth: 0 },
+        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![1, 2], idom: 1, depth: 0 },
+    ] });
+    let loops = cfg.detect_natural_loops();
+    assert_eq!(loops, vec![
+        Loop { header: 1, body: vec![1, 2] },
+    ]);
+    assert_eq!(cfg, ControlFlowGraph { blocks: vec![
+        BasicBlock { range: 0..2,  succ: vec![1],    reachable: true, pred: vec![],     idom: 0, depth: 0 },
+        BasicBlock { range: 3..6,  succ: vec![2, 3], reachable: true, pred: vec![0, 2], idom: 0, depth: 1 },
+        BasicBlock { range: 6..8,  succ: vec![1, 3], reachable: true, pred: vec![1],    idom: 1, depth: 1 },
+        BasicBlock { range: 9..11, succ: vec![],     reachable: true, pred: vec![1, 2], idom: 1, depth: 0 },
     ] });
 }
